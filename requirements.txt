@@ -2,3 +2,5 @@ streamlit
 requests
 pandas
 bs4
+numpy
+scikit-learn

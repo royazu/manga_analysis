@@ -7,6 +7,18 @@ from typing import Any
 
 import pandas as pd
 import requests
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    f1_score,
+)
+
 
 BASE_URL = "https://api.mangadex.org"
 HEADERS = {"User-Agent": "manga-analysis/0.1 (local research project)"}
@@ -226,37 +238,114 @@ def _stats_from_existing(path: Path) -> dict[str, dict[str, Any]] | None:
         }
     return stats
 
-def check_api_status() -> str:
-    response = requests.get(f"{BASE_URL}/manga")
+def check_api_status() -> str | None:
+    # MangaDex uses top-level "result", not "status".
+    response = requests.get(
+        f"{BASE_URL}/manga",
+        headers=HEADERS,
+        params={"limit": 1},
+        timeout=30,
+    )
     response.raise_for_status()
-    return response.json().get("status")
+    return response.json().get("result")
 
-# def data_preprocessing(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    
+def _to_tag_list(value: Any) -> list[str]:
+    # JSON already stores tags as lists; CSV stores them as "Action; Romance".
+    if isinstance(value, list):
+        return [str(tag).strip() for tag in value if str(tag).strip()]
+    if isinstance(value, str):
+        return [tag.strip() for tag in value.split(";") if tag.strip()]
+    return []
+
+
+def data_preprocessing(data: pd.DataFrame) -> pd.DataFrame:
+    data = data[['id', 'title', 'title_en', 'title_localized', 'tags',
+       'publication_demographic', 'authors', 'artists', 'status', 'year',
+       'content_rating', 'original_language', 'description_en', 'related',
+       'created_at', 'updated_at', 'rank', 'follows', 'rating_average',
+       'rating_bayesian']].copy()
+    data.drop_duplicates('title', inplace=True)
+    data['tags'] = data['tags'].apply(_to_tag_list)
+    data['follows_group'] = pd.cut(
+        data['follows'],
+        bins=[0, 1000, 10000, 100000, 1000000],
+        labels=['Low', 'Medium', 'High', 'Very High'],
+    )
+    return data
+
+def model_training(data: pd.DataFrame):
+    # KNN needs numeric features only — text columns like title cannot be used raw.
+    frame = data.dropna(subset=["follows_group"]).copy()
+    numeric_cols = ["year", "rank", "rating_average", "rating_bayesian"]
+    categorical_cols = [
+        "publication_demographic",
+        "status",
+        "content_rating",
+        "original_language",
+    ]
+
+    frame["year"] = frame["year"].fillna(frame["year"].median())
+    for col in categorical_cols:
+        frame[col] = frame[col].fillna("unknown").astype(str)
+
+    mlb = MultiLabelBinarizer()
+    tags_encoded = pd.DataFrame(
+        mlb.fit_transform(frame["tags"]),
+        columns=[f"tag_{name}" for name in mlb.classes_],
+        index=frame.index,
+    )
+    cats_encoded = pd.get_dummies(frame[categorical_cols], drop_first=True)
+    X = pd.concat([frame[numeric_cols], cats_encoded, tags_encoded], axis=1)
+    y = frame["follows_group"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    model = KNeighborsClassifier(n_neighbors=4)
+    model.fit(X_train, y_train)
+    return model, X_test, y_test
+
 
 def main() -> None:
     if check_api_status() != "ok":
         print("API is not running")
         return
     print("API is running")
-    if Path.exists(RAW_DIR / "top_1000_manga.json"):
-        with open(RAW_DIR / "top_1000_manga.json", "r") as f:
-            json_data = json.load(f)
-            data = pd.read_json(json_data)
 
+    raw_path = RAW_DIR / "top_1000_manga.json"
+    if raw_path.exists():
+        with raw_path.open(encoding="utf-8") as f:
+            json_data = json.load(f)
+        data = pd.DataFrame(json_data)
     else:
         manga_rows = fetch_top_manga(TOP_N)
-        existing_path = RAW_DIR / "top_1000_manga.json"
-        stats_by_id = _stats_from_existing(existing_path)
+        stats_by_id = _stats_from_existing(raw_path)
         if stats_by_id is None or any(row["id"] not in stats_by_id for row in manga_rows):
             stats_by_id = fetch_statistics([row["id"] for row in manga_rows])
         else:
-            print(f"Reused statistics from {existing_path}")
+            print(f"Reused statistics from {raw_path}")
         merged = merge_manga_with_stats(manga_rows, stats_by_id)
-        with open(RAW_DIR / "top_1000_manga.json", "w") as f:
-            json.dump(merged, f, ensure_ascii=False, indent=2)
-        data = pd.read_json(merged)
-    print(data.head())
+        save_outputs(merged)
+        data = pd.DataFrame(merged)
+
+    data = data_preprocessing(data)
+    model, X_test, y_test = model_training(data)
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)
+
+    print(y_pred)
+    print(y_test)
+    print("accuracy:", model.score(X_test, y_test))
+    print(classification_report(y_test, y_pred))
+    print(confusion_matrix(y_test, y_pred))
+    print(
+        "roc_auc:",
+        roc_auc_score(y_test, y_proba, multi_class="ovr", average="weighted"),
+    )
+    print("precision:", precision_score(y_test, y_pred, average="weighted", zero_division=0))
+    print("recall:", recall_score(y_test, y_pred, average="weighted", zero_division=0))
+    print("f1:", f1_score(y_test, y_pred, average="weighted", zero_division=0))
+
 
 if __name__ == "__main__":
     main()

@@ -208,7 +208,7 @@ def save_outputs(rows: list[dict[str, Any]]) -> None:
                 "related": json.dumps(row["related"], ensure_ascii=False),
             }
         )
-    pd.DataFrame(flat_rows).to_csv(csv_path, index=False)
+    _safe_to_csv(pd.DataFrame(flat_rows), csv_path)
     print(f"Saved {len(rows)} rows to {json_path} and {csv_path}")
 
 
@@ -372,15 +372,139 @@ def model_training(data: pd.DataFrame, n_splits: int = 5):
     return model, y, y_pred, metrics
 
 
+FALLBACK_GENRE_TAGS = {
+    "Action",
+    "Adventure",
+    "Boys' Love",
+    "Comedy",
+    "Crime",
+    "Drama",
+    "Fantasy",
+    "Girls' Love",
+    "Historical",
+    "Horror",
+    "Isekai",
+    "Magical Girls",
+    "Mecha",
+    "Medical",
+    "Mystery",
+    "Philosophical",
+    "Psychological",
+    "Romance",
+    "Sci-Fi",
+    "Slice of Life",
+    "Sports",
+    "Superhero",
+    "Thriller",
+    "Tragedy",
+    "Wuxia",
+}
+
+
 def fetch_genre_tag_names() -> set[str]:
     """MangaDex tag groups: genre / theme / format / content. Keep genre only."""
-    payload = _get(f"{BASE_URL}/manga/tag")
-    return {
-        tag["attributes"]["name"].get("en")
-        for tag in payload.get("data", [])
-        if tag.get("attributes", {}).get("group") == "genre"
-        and tag.get("attributes", {}).get("name", {}).get("en")
-    }
+    try:
+        payload = _get(f"{BASE_URL}/manga/tag")
+        genres = {
+            tag["attributes"]["name"].get("en")
+            for tag in payload.get("data", [])
+            if tag.get("attributes", {}).get("group") == "genre"
+            and tag.get("attributes", {}).get("name", {}).get("en")
+        }
+        if genres:
+            return genres
+    except Exception as exc:
+        print(f"Genre tag fetch failed ({exc}); using fallback genre list.")
+    return set(FALLBACK_GENRE_TAGS)
+
+
+def validate_data_quality(raw_df: pd.DataFrame, processed_df: pd.DataFrame) -> pd.DataFrame:
+    """Surface missing values, duplicates, and invalid ranges for reviewer visibility."""
+    issues: list[dict[str, Any]] = []
+
+    def add_issue(check: str, severity: str, detail: str, count: int = 1) -> None:
+        issues.append(
+            {"check": check, "severity": severity, "detail": detail, "count": count}
+        )
+
+    if raw_df.empty:
+        add_issue("raw_empty", "error", "Raw dataset is empty")
+    if processed_df.empty:
+        add_issue("processed_empty", "error", "Processed dataset is empty")
+
+    dup_titles = int(raw_df["title"].duplicated().sum()) if "title" in raw_df else 0
+    if dup_titles:
+        add_issue("duplicate_titles_raw", "warning", "Duplicate titles in raw extract", dup_titles)
+
+    for col in ("follows", "rating_average", "rating_bayesian", "year", "rank"):
+        if col not in processed_df.columns:
+            continue
+        missing = int(processed_df[col].isna().sum())
+        if missing:
+            add_issue(f"missing_{col}", "warning", f"Missing values in {col}", missing)
+
+    if "follows" in processed_df.columns:
+        invalid_follows = int((processed_df["follows"].fillna(-1) < 0).sum())
+        if invalid_follows:
+            add_issue("invalid_follows", "error", "Negative follower counts", invalid_follows)
+
+    if "rating_average" in processed_df.columns:
+        invalid_rating = int(
+            (
+                (processed_df["rating_average"] < 0) | (processed_df["rating_average"] > 10)
+            ).fillna(False).sum()
+        )
+        if invalid_rating:
+            add_issue(
+                "invalid_rating_average",
+                "error",
+                "rating_average outside expected 0-10 range",
+                invalid_rating,
+            )
+
+    if "status" in processed_df.columns:
+        allowed_status = {"ongoing", "completed", "hiatus", "cancelled"}
+        unexpected = sorted(set(processed_df["status"].dropna().astype(str)) - allowed_status)
+        if unexpected:
+            add_issue(
+                "unexpected_status",
+                "warning",
+                f"Unexpected status values: {unexpected}",
+                len(unexpected),
+            )
+
+    if "follows_group" in processed_df.columns:
+        ungrouped = int(processed_df["follows_group"].isna().sum())
+        if ungrouped:
+            add_issue(
+                "ungrouped_follows",
+                "warning",
+                "Rows without follows_group (outside bin edges or null follows)",
+                ungrouped,
+            )
+
+    report = pd.DataFrame(issues)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = _safe_to_csv(report, PROCESSED_DIR / "data_quality_report.csv")
+    print(f"Data quality checks: {len(issues)} issue(s) written to {report_path}")
+    if issues:
+        print(report.to_string(index=False))
+    else:
+        print("Data quality checks: no issues found")
+    return report
+
+
+def _safe_to_csv(df: pd.DataFrame, path: Path) -> Path:
+    """Write CSV; if the target is locked (e.g. open in Excel), write a sibling file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        df.to_csv(path, index=False)
+        return path
+    except PermissionError:
+        alt = path.with_name(f"{path.stem}_new{path.suffix}")
+        df.to_csv(alt, index=False)
+        print(f"Could not overwrite {path} (file locked); saved {alt}")
+        return alt
 
 
 def genre_success_stats(data: pd.DataFrame, genre_names: set[str] | None = None) -> pd.DataFrame:
@@ -426,29 +550,36 @@ def genre_success_stats(data: pd.DataFrame, genre_names: set[str] | None = None)
 
 
 def main() -> None:
-    if check_api_status() != "ok":
-        print("API is not running")
-        return
-    print("API is running")
-
     raw_path = RAW_DIR / "top_1000_manga.json"
+    api_ok = False
+    try:
+        api_ok = check_api_status() == "ok"
+    except Exception as exc:
+        print(f"API health check failed: {exc}")
+
+    if api_ok:
+        print("API is running")
+    else:
+        print("API is unavailable; will use cached raw data if present")
+
     if raw_path.exists():
         with raw_path.open(encoding="utf-8") as f:
             json_data = json.load(f)
-        data = pd.DataFrame(json_data)
+        raw_df = pd.DataFrame(json_data)
+        print(f"Loaded cached raw data from {raw_path} ({len(raw_df)} rows)")
     else:
+        if not api_ok:
+            print("API is not running and no cached raw data found")
+            return
         manga_rows = fetch_top_manga(TOP_N)
-        stats_by_id = _stats_from_existing(raw_path)
-        if stats_by_id is None or any(row["id"] not in stats_by_id for row in manga_rows):
-            stats_by_id = fetch_statistics([row["id"] for row in manga_rows])
-        else:
-            print(f"Reused statistics from {raw_path}")
+        stats_by_id = fetch_statistics([row["id"] for row in manga_rows])
         merged = merge_manga_with_stats(manga_rows, stats_by_id)
         save_outputs(merged)
-        data = pd.DataFrame(merged)
+        raw_df = pd.DataFrame(merged)
 
-    data = data_preprocessing(data)
+    data = data_preprocessing(raw_df)
     data = etl_processing(data)
+    validate_data_quality(raw_df, data)
     _, _, _, metrics = model_training(data)
 
     print("K-Fold evaluation: predict follows_group from manga features")
@@ -474,9 +605,7 @@ def main() -> None:
 
     print("\nGenre success summary (genre tags only):")
     genre_df = genre_success_stats(data)
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    genre_path = PROCESSED_DIR / "genre_success_stats.csv"
-    genre_df.to_csv(genre_path, index=False)
+    genre_path = _safe_to_csv(genre_df, PROCESSED_DIR / "genre_success_stats.csv")
     print(genre_df.to_string(index=False))
     print(f"\nSaved genre stats to {genre_path}")
     top = genre_df.iloc[0]

@@ -1,0 +1,3 @@
+check,severity,detail,count
+duplicate_titles_raw,warning,Duplicate titles in raw extract,1
+missing_year,warning,Missing values in year,25

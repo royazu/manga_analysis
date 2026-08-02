@@ -361,6 +361,9 @@ def model_training(data: pd.DataFrame, n_splits: int = 5):
         "f1": f1_score(y, y_pred, average="weighted", zero_division=0),
         "roc_auc": roc_auc_score(y, y_proba, multi_class="ovr", average="weighted"),
         "classification_report": classification_report(y, y_pred, labels=labels, zero_division=0),
+        "classification_report_dict": classification_report(
+            y, y_pred, labels=labels, zero_division=0, output_dict=True
+        ),
         "confusion_matrix": cm,
         "labels": labels,
         "group_importance": group_importance,

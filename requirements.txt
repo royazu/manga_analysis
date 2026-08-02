@@ -1,6 +1,8 @@
-streamlit
+streamlit>=1.60
+starlette>=0.45
 requests
 pandas
 bs4
 numpy
 scikit-learn
+altair

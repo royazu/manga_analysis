@@ -1,0 +1,101 @@
+{
+  "accuracy": 0.7697697697697697,
+  "precision": 0.7306523911689964,
+  "recall": 0.7697697697697697,
+  "f1": 0.7395533394677597,
+  "roc_auc": 0.8605707715325176,
+  "classification_report": "              precision    recall  f1-score   support\n\n         Low       0.00      0.00      0.00        15\n      Medium       0.82      0.62      0.70       356\n        High       0.75      0.94      0.84       584\n   Very High       0.00      0.00      0.00        44\n\n    accuracy                           0.77       999\n   macro avg       0.39      0.39      0.39       999\nweighted avg       0.73      0.77      0.74       999\n",
+  "classification_report_dict": {
+    "Low": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 15.0
+    },
+    "Medium": {
+      "precision": 0.8154981549815498,
+      "recall": 0.6207865168539326,
+      "f1-score": 0.7049441786283892,
+      "support": 356.0
+    },
+    "High": {
+      "precision": 0.7527472527472527,
+      "recall": 0.9383561643835616,
+      "f1-score": 0.8353658536585366,
+      "support": 584.0
+    },
+    "Very High": {
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1-score": 0.0,
+      "support": 44.0
+    },
+    "accuracy": 0.7697697697697697,
+    "macro avg": {
+      "precision": 0.3920613519322006,
+      "recall": 0.38978567030937356,
+      "f1-score": 0.38507750807173147,
+      "support": 999.0
+    },
+    "weighted avg": {
+      "precision": 0.7306523911689964,
+      "recall": 0.7697697697697697,
+      "f1-score": 0.7395533394677597,
+      "support": 999.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      0,
+      14,
+      1,
+      0
+    ],
+    [
+      0,
+      221,
+      135,
+      0
+    ],
+    [
+      0,
+      36,
+      548,
+      0
+    ],
+    [
+      0,
+      0,
+      44,
+      0
+    ]
+  ],
+  "labels": [
+    "Low",
+    "Medium",
+    "High",
+    "Very High"
+  ],
+  "group_importance": {
+    "tags": 0.46826442459558354,
+    "rating_bayesian": 0.11340968232065311,
+    "rating_average": 0.10695040779084074,
+    "publication_demographic": 0.0656295479606018,
+    "status": 0.06029336639170573,
+    "related_count": 0.05874107294507859,
+    "year": 0.05671305332962261,
+    "content_rating": 0.027653438033878344,
+    "original_language": 0.020885861032427303,
+    "is_award_winning": 0.015659267339391585,
+    "is_new": 0.005799878260216674
+  },
+  "most_contributing_field": "tags",
+  "excluded_leaky_features": [
+    "follows",
+    "follows_group",
+    "is_popular",
+    "rank"
+  ],
+  "n_features": 104,
+  "n_rows": 999
+}

@@ -1,0 +1,37 @@
+{
+  "run_id": "bad7ba17-c66e-4f8e-aa99-58be359d3a30",
+  "started_at": "2026-08-02T19:09:17.182559+00:00",
+  "ended_at": "2026-08-02T19:09:28.365924+00:00",
+  "duration_seconds": 11.18,
+  "source": "cache",
+  "raw_rows": 1000,
+  "cleaned_rows": 999,
+  "genre_rows": 25,
+  "dq_gate": "warn",
+  "dq_errors": 0,
+  "dq_warnings": 3,
+  "model_accuracy": 0.7697697697697697,
+  "most_contributing_field": "tags",
+  "excluded_leaky_features": [
+    "follows",
+    "follows_group",
+    "is_popular",
+    "rank"
+  ],
+  "genre_min_count": 20,
+  "artifacts": {
+    "raw": "data\\raw\\top_1000_manga.json",
+    "cleaned_json": "data\\processed\\manga_cleaned.json",
+    "cleaned_csv": "data\\processed\\manga_cleaned.csv",
+    "genre_stats": "data\\processed\\genre_success_stats.csv",
+    "dq_report": "data\\processed\\data_quality_report.csv",
+    "model_metrics": "data\\processed\\model_metrics.json",
+    "model_predictions": "data\\processed\\model_predictions.csv",
+    "feature_importance": "data\\processed\\feature_importance.csv"
+  },
+  "notes": [
+    "App serves only processed artifacts; it does not retrain models.",
+    "Genre stats are multi-label (manga can count in multiple genres).",
+    "Genres with manga_count < genre_min_count are flagged low_support."
+  ]
+}

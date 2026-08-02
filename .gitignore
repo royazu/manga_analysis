@@ -7,3 +7,5 @@ __pycache__/
 .DS_Store
 *.log
 .vscode/
+data/processed/*_new.csv
+data/processed/*_new.json

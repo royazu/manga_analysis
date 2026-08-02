@@ -7,8 +7,8 @@ from typing import Any
 
 import pandas as pd
 import requests
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import (
     classification_report,
@@ -17,6 +17,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     f1_score,
+    accuracy_score,
 )
 
 
@@ -238,6 +239,7 @@ def _stats_from_existing(path: Path) -> dict[str, dict[str, Any]] | None:
         }
     return stats
 
+
 def check_api_status() -> str | None:
     # MangaDex uses top-level "result", not "status".
     response = requests.get(
@@ -248,6 +250,7 @@ def check_api_status() -> str | None:
     )
     response.raise_for_status()
     return response.json().get("result")
+
 
 def _to_tag_list(value: Any) -> list[str]:
     # JSON already stores tags as lists; CSV stores them as "Action; Romance".
@@ -273,10 +276,21 @@ def data_preprocessing(data: pd.DataFrame) -> pd.DataFrame:
     )
     return data
 
-def model_training(data: pd.DataFrame):
-    # KNN needs numeric features only — text columns like title cannot be used raw.
+
+def etl_processing(data: pd.DataFrame) -> pd.DataFrame:
+    frame = data.copy()
+    frame["is_award_winning"] = frame["tags"].apply(
+        lambda tags: any("award" in str(tag).lower() for tag in tags)
+    )
+    frame["is_new"] = frame["year"].fillna(0).astype(float) > 2025
+    return frame
+
+
+def build_feature_matrix(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, dict[str, list[str]]]:
+    """Build numeric X from data. y = follows_group. Never include follows itself (leakage)."""
     frame = data.dropna(subset=["follows_group"]).copy()
     numeric_cols = ["year", "rank", "rating_average", "rating_bayesian"]
+    boolean_cols = ["is_award_winning", "is_new"]
     categorical_cols = [
         "publication_demographic",
         "status",
@@ -287,6 +301,8 @@ def model_training(data: pd.DataFrame):
     frame["year"] = frame["year"].fillna(frame["year"].median())
     for col in categorical_cols:
         frame[col] = frame[col].fillna("unknown").astype(str)
+    for col in boolean_cols:
+        frame[col] = frame[col].fillna(False).astype(int)
 
     mlb = MultiLabelBinarizer()
     tags_encoded = pd.DataFrame(
@@ -294,16 +310,116 @@ def model_training(data: pd.DataFrame):
         columns=[f"tag_{name}" for name in mlb.classes_],
         index=frame.index,
     )
-    cats_encoded = pd.get_dummies(frame[categorical_cols], drop_first=True)
-    X = pd.concat([frame[numeric_cols], cats_encoded, tags_encoded], axis=1)
-    y = frame["follows_group"]
+    cats_encoded = pd.get_dummies(frame[categorical_cols], drop_first=False)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+    X = pd.concat(
+        [frame[numeric_cols + boolean_cols], cats_encoded, tags_encoded],
+        axis=1,
     )
-    model = KNeighborsClassifier(n_neighbors=4)
-    model.fit(X_train, y_train)
-    return model, X_test, y_test
+    y = frame["follows_group"].astype(str)
+
+    feature_groups: dict[str, list[str]] = {
+        col: [col] for col in numeric_cols + boolean_cols
+    }
+    for col in categorical_cols:
+        feature_groups[col] = [c for c in cats_encoded.columns if c.startswith(f"{col}_")]
+    feature_groups["tags"] = list(tags_encoded.columns)
+    return X, y, feature_groups
+
+
+def model_training(data: pd.DataFrame, n_splits: int = 5):
+    """
+    Stratified K-Fold CV: X = encoded data features, y = follows_group.
+    Confusion matrix evaluates class prediction quality.
+    Feature importances identify the most contributing field.
+    """
+    X, y, feature_groups = build_feature_matrix(data)
+    labels = sorted(y.unique(), key=lambda c: ["Low", "Medium", "High", "Very High"].index(c))
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    model = RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        class_weight="balanced_subsample",
+    )
+
+    y_pred = cross_val_predict(model, X, y, cv=cv)
+    y_proba = cross_val_predict(model, X, y, cv=cv, method="predict_proba")
+
+    model.fit(X, y)
+    importances = pd.Series(model.feature_importances_, index=X.columns)
+    group_importance = {
+        group: float(importances[cols].sum()) if cols else 0.0
+        for group, cols in feature_groups.items()
+    }
+    group_importance = pd.Series(group_importance).sort_values(ascending=False)
+
+    cm = confusion_matrix(y, y_pred, labels=labels)
+    metrics = {
+        "accuracy": accuracy_score(y, y_pred),
+        "precision": precision_score(y, y_pred, average="weighted", zero_division=0),
+        "recall": recall_score(y, y_pred, average="weighted", zero_division=0),
+        "f1": f1_score(y, y_pred, average="weighted", zero_division=0),
+        "roc_auc": roc_auc_score(y, y_proba, multi_class="ovr", average="weighted"),
+        "classification_report": classification_report(y, y_pred, labels=labels, zero_division=0),
+        "confusion_matrix": cm,
+        "labels": labels,
+        "group_importance": group_importance,
+        "most_contributing_field": group_importance.index[0],
+    }
+    return model, y, y_pred, metrics
+
+
+def fetch_genre_tag_names() -> set[str]:
+    """MangaDex tag groups: genre / theme / format / content. Keep genre only."""
+    payload = _get(f"{BASE_URL}/manga/tag")
+    return {
+        tag["attributes"]["name"].get("en")
+        for tag in payload.get("data", [])
+        if tag.get("attributes", {}).get("group") == "genre"
+        and tag.get("attributes", {}).get("name", {}).get("en")
+    }
+
+
+def genre_success_stats(data: pd.DataFrame, genre_names: set[str] | None = None) -> pd.DataFrame:
+    """
+    Aggregate manga stats by genre tag only (excludes format/theme/content tags
+    such as Award Winning, Official Colored, etc.).
+    """
+    if genre_names is None:
+        genre_names = fetch_genre_tag_names()
+
+    frame = data.copy()
+    frame["genres"] = frame["tags"].apply(
+        lambda tags: [tag for tag in tags if tag in genre_names]
+    )
+    exploded = frame.explode("genres").dropna(subset=["genres"])
+    exploded = exploded.rename(columns={"genres": "genre"})
+
+    summary = (
+        exploded.groupby("genre", as_index=False)
+        .agg(
+            manga_count=("id", "nunique"),
+            avg_rating=("rating_average", "mean"),
+            avg_bayesian_rating=("rating_bayesian", "mean"),
+            total_followers=("follows", "sum"),
+            avg_followers=("follows", "mean"),
+            avg_rank=("rank", "mean"),
+        )
+        .sort_values(["avg_followers", "avg_bayesian_rating"], ascending=False)
+        .reset_index(drop=True)
+    )
+
+    # Higher followers + rating and better (lower) rank => higher success likelihood.
+    followers_norm = summary["avg_followers"] / summary["avg_followers"].max()
+    rating_norm = summary["avg_bayesian_rating"] / summary["avg_bayesian_rating"].max()
+    rank_norm = 1 - (summary["avg_rank"] - summary["avg_rank"].min()) / (
+        summary["avg_rank"].max() - summary["avg_rank"].min()
+    )
+    summary["success_score"] = (
+        0.45 * followers_norm + 0.35 * rating_norm + 0.20 * rank_norm
+    )
+    summary = summary.sort_values("success_score", ascending=False).reset_index(drop=True)
+    return summary
 
 
 def main() -> None:
@@ -329,22 +445,45 @@ def main() -> None:
         data = pd.DataFrame(merged)
 
     data = data_preprocessing(data)
-    model, X_test, y_test = model_training(data)
-    y_pred = model.predict(X_test)
-    y_proba = model.predict_proba(X_test)
+    data = etl_processing(data)
+    _, _, _, metrics = model_training(data)
 
-    print(y_pred)
-    print(y_test)
-    print("accuracy:", model.score(X_test, y_test))
-    print(classification_report(y_test, y_pred))
-    print(confusion_matrix(y_test, y_pred))
+    print("K-Fold evaluation: predict follows_group from manga features")
+    print("accuracy:", metrics["accuracy"])
+    print(metrics["classification_report"])
+    print("Confusion matrix (rows=true, cols=pred):", metrics["labels"])
+    print(metrics["confusion_matrix"])
+    print("roc_auc:", metrics["roc_auc"])
+    print("precision:", metrics["precision"])
+    print("recall:", metrics["recall"])
+    print("f1:", metrics["f1"])
+    print("\nField contribution (RandomForest importance, grouped):")
+    print(metrics["group_importance"].to_string())
     print(
-        "roc_auc:",
-        roc_auc_score(y_test, y_proba, multi_class="ovr", average="weighted"),
+        "\nMost contributing field:",
+        metrics["most_contributing_field"],
+        f"({metrics['group_importance'].iloc[0]:.4f})",
     )
-    print("precision:", precision_score(y_test, y_pred, average="weighted", zero_division=0))
-    print("recall:", recall_score(y_test, y_pred, average="weighted", zero_division=0))
-    print("f1:", f1_score(y_test, y_pred, average="weighted", zero_division=0))
+    print(
+        "Note: the confusion matrix shows prediction quality by follows_group class; "
+        "field contribution comes from model feature importance."
+    )
+
+    print("\nGenre success summary (genre tags only):")
+    genre_df = genre_success_stats(data)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    genre_path = PROCESSED_DIR / "genre_success_stats.csv"
+    genre_df.to_csv(genre_path, index=False)
+    print(genre_df.to_string(index=False))
+    print(f"\nSaved genre stats to {genre_path}")
+    top = genre_df.iloc[0]
+    print(
+        f"\nHighest success-likelihood genre: {top['genre']} "
+        f"(score={top['success_score']:.4f}, "
+        f"avg_followers={top['avg_followers']:.0f}, "
+        f"avg_rating={top['avg_rating']:.3f}, "
+        f"avg_rank={top['avg_rank']:.1f})"
+    )
 
 
 if __name__ == "__main__":

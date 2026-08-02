@@ -130,7 +130,7 @@ Checks include empty frames, duplicate titles, missing critical fields, invalid 
 
 ## How AI was used
 
-Full interaction log: `ai_transcript/conversation_log.txt`
+Full interaction log: `cursor_api_call_error_investigation.md`
 
 AI assisted API design, debugging, modeling choices, dashboarding, and hardening (serve/ETL split, leakage controls, DQ gates). AI suggestions were reviewed and corrected where needed.
 

@@ -1,0 +1,149 @@
+Manga Analysis Project — Conversation Log
+=========================================
+Workspace: manga_analysis
+Generated: 2026-08-02
+
+--------------------------------------------------------------------------------
+1) API test error in etl.py
+--------------------------------------------------------------------------------
+User: When testing the API call in etl.py, got an error. What could cause it?
+
+Assistant: The failure was NameError: name 'title' is not defined.
+Cause: top-level code used `title` before it was defined; `title = "One Piece"`
+only existed inside main(). The script crashed on import before reaching main().
+Fix: remove the top-level request or define title before that call.
+
+--------------------------------------------------------------------------------
+2) MangaDex API guidance — top 1000 rated manga
+--------------------------------------------------------------------------------
+User: Asked for instructions (from MangaDex docs) on scraping top 1000 rated mangas
+with category, title, author, status, initial release timestamp, spin-offs/sequels,
+plus a list of available fields.
+
+Assistant: Use official API GET /manga (not website scraping).
+- Sort: order[rating]=desc
+- Paginate: limit=100, offset 0..900 (max limit 100; offset+limit <= 10000)
+- Expand: includes[]=author, artist, manga
+- Field mapping: title, tags, publicationDemographic, status, year (not full
+  timestamp), related manga via relationships.related
+- Rate limit ~5 req/s; User-Agent required
+- Stats via GET /statistics/manga (batch with manga[])
+- Listed MangaAttributes, relationships, related enums, order keys, query params
+
+--------------------------------------------------------------------------------
+3) Implement top 1000 fetch + statistics
+--------------------------------------------------------------------------------
+User: Use the suggested code to get top 1000 mangas and statistics per manga.
+
+Assistant: Implemented etl.py with:
+- fetch_top_manga()
+- fetch_statistics() in batches of 100
+- merge + save to data/raw/top_1000_manga.json and data/processed/top_1000_manga.csv
+- Run succeeded: 1000 rows, no missing Bayesian ratings
+
+--------------------------------------------------------------------------------
+4) Add English localized title column
+--------------------------------------------------------------------------------
+User: Add English localized name right after the original name.
+
+Assistant: Added title_en from title.en or altTitles.
+CSV was initially locked (file open); wrote alternate then later main CSV updated.
+~977/1000 had English titles.
+
+--------------------------------------------------------------------------------
+5) Invalid VS Code python-envs.defaultEnvManager
+--------------------------------------------------------------------------------
+User: Verify and fix invalid ms-python.python:system setting.
+
+Assistant: Confirmed invalid for defaultEnvManager.
+Valid: ms-python.python:venv or ms-python.python:conda.
+Updated .vscode/settings.json to ms-python.python:venv.
+
+--------------------------------------------------------------------------------
+6) "No API connection" / check_api_status bug
+--------------------------------------------------------------------------------
+User: Why is there no API connection in etl.py?
+
+Assistant: Health check used response.json()["status"], but MangaDex returns
+"result": "ok". .get("status") was always None → "API is not running".
+Fixed to use "result", added User-Agent, fixed DataFrame loading.
+
+--------------------------------------------------------------------------------
+7) Tags split error
+--------------------------------------------------------------------------------
+User: Wanted tags as a list per row; hit AttributeError.
+
+Assistant: JSON already stores tags as lists; .split(';') only works on CSV strings.
+Added _to_tag_list() that keeps lists and only splits strings.
+
+--------------------------------------------------------------------------------
+8) Model training ValueError (string to float)
+--------------------------------------------------------------------------------
+User: Fix error in terminal (KNN fit failing).
+
+Assistant: KNN received raw text columns (e.g. title).
+Fixed by encoding numeric/categorical/tag features; multiclass metrics adjusted.
+Later switched to Stratified K-Fold + RandomForest for follows_group prediction
+and grouped feature importance (tags most important).
+
+--------------------------------------------------------------------------------
+9) KFold + confusion matrix + contributing field
+--------------------------------------------------------------------------------
+User: Change model to KFold; X=data, Y=follows_group; evaluate followers;
+find most contributing field with confusion matrix.
+
+Assistant: Implemented StratifiedKFold + RandomForest.
+Note: confusion matrix shows class prediction quality; field contribution comes
+from feature importance (not the confusion matrix itself).
+Most contributing field: tags (~0.45). Accuracy ~0.78.
+
+--------------------------------------------------------------------------------
+10) Genre success aggregation
+--------------------------------------------------------------------------------
+User: Predict which genre has highest success likelihood. Aggregate genre tags only
+(exclude Award Winning, Official Colored, etc.). DataFrame with genre, avg rating,
+manga count, total/avg followers, avg ranking.
+
+Assistant: Used MangaDex tag group == "genre" only.
+Created genre_success_stats() and saved data/processed/genre_success_stats.csv
+with success_score. Top genre by score: Isekai.
+
+--------------------------------------------------------------------------------
+11) Streamlit dashboard
+--------------------------------------------------------------------------------
+User: Build Streamlit dashboard in app.py for data before/after processing and
+model evaluation results.
+
+Assistant: Built app.py with tabs:
+- Before processing
+- After processing
+- Model evaluation (metrics, confusion matrix, importance)
+- Genre success
+Cached loaders; classification_report_dict added in etl.py.
+
+--------------------------------------------------------------------------------
+12) streamlit command not found
+--------------------------------------------------------------------------------
+User: Check terminal error.
+
+Assistant: `streamlit` not on PATH (Windows Store Python).
+Use: python -m streamlit run app.py
+App verified at http://localhost:8501
+
+--------------------------------------------------------------------------------
+13) Generate conversation .txt
+--------------------------------------------------------------------------------
+User: Generate a .txt file of our conversation.
+
+Assistant: Created this file (conversation_log.txt).
+
+================================================================================
+Key project artifacts
+================================================================================
+- etl.py                 — fetch, process, model, genre stats
+- app.py                 — Streamlit dashboard
+- requirements.txt       — streamlit, requests, pandas, bs4, numpy, scikit-learn, altair
+- data/raw/top_1000_manga.json
+- data/processed/top_1000_manga.csv
+- data/processed/genre_success_stats.csv
+================================================================================
